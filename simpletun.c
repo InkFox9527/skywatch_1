@@ -43,6 +43,7 @@
 #define SERVER 1
 #define PORT 55555
 #define PWLEN 64
+typedef enum { false, true }bool;  
 
 int debug;
 char *progname;
@@ -195,6 +196,7 @@ int main(int argc, char *argv[]) {
   char pw_str[256] = "";
   FILE * fp;
   char read_line[256] ="";
+  bool get_correct_pw = false;
 
   progname = argv[0];
   
@@ -314,8 +316,9 @@ int main(int argc, char *argv[]) {
         if(FD_ISSET(net_fd, &rd_set)) {
             
             net2tap++;
-
+    
             // read packet
+            memset(buffer, 0, BUFSIZE);
             nread = read(net_fd, buffer, BUFSIZE);
             
             if (nread != 0)
@@ -333,7 +336,6 @@ int main(int argc, char *argv[]) {
                         printf("unknown feedback :%s\n",buffer);
                 break;
             }
-            memset(buffer, 0, BUFSIZE);
         }
     }
 
@@ -410,13 +412,14 @@ int main(int argc, char *argv[]) {
                     do_debug("strcmp:%d\n", strcmp(read_line,buffer));
                     if (strcmp(read_line,buffer) == 0)
                     {
-                        write(net_fd, "1", strlen("1"));
-                        do_debug("write in net_fd\n");
-                        continue;
+                        get_correct_pw=true;
+                        do_debug("write 1 in net_fd\n");
+                        break;
                     }
                 }
                 fclose(fp);
-                write(net_fd, "0", strlen("0"));
+                (get_correct_pw)?write(net_fd, "1", strlen("1")):write(net_fd, "0", strlen("0"));
+                get_correct_pw=false;
             }
             memset(buffer, 0, BUFSIZE);
         }

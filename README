@@ -1,3 +1,12 @@
+Step for use this tool
+
+1. prepare two linux envirements (Oracle VM 6.1.34, CentOS 8)
+2. make sure they can ping each other (Server: 192.168.0.111, Client: 192.168.0.114)
+3. Check pw_file.txt in the same folder with simpetun execute file at server side.
+4.	[server] ./simprtun -i tun0 -s
+	[client] ./simprtun -i tun0 -c 192.168.0.111 -w {password}
+
+===============================================================================================================
 simpletun, a (too) simple tunnelling program.
 
 -------
