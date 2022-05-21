@@ -42,11 +42,16 @@
 #define CLIENT 0
 #define SERVER 1
 #define PORT 55555
-#define PWLEN 64
-typedef enum { false, true }bool;  
+
+#define pwLenth 252
+#define OTHERS 0
+#define PW_Input 1
+#define PW_Result 2
+#define PW_FILE_PATH "pw_file.txt"
 
 int debug;
 char *progname;
+char *actionFlag[] = {"others", "pwi", "pwr"};
 
 /**************************************************************************
  * tun_alloc: allocates or reconnects to a tun/tap device. The caller     *
@@ -94,9 +99,6 @@ int cread(int fd, char *buf, int n){
     perror("Reading data");
     exit(1);
   }
-  
-  printf("Cread: %s\n", buf);
-  
   return nread;
 }
 
@@ -127,12 +129,64 @@ int read_n(int fd, char *buf, int n) {
     if ((nread = cread(fd, buf, left)) == 0){
       return 0 ;      
     }else {
-      printf("nread:%d\n",nread);
       left -= nread;
       buf += nread;
     }
   }
   return n;  
+}
+
+/**************************************************************************
+ * send2tun: send string to tun                                           *
+ **************************************************************************/
+void send2tun(int fd, char *str)  {
+  
+  uint16_t length;
+  int nwrite;
+  
+  length = htons(strlen(str));
+  nwrite = cwrite(fd, (char *)&length, sizeof(length));
+  nwrite = cwrite(fd, str, strlen(str));
+}
+
+/**************************************************************************
+ * analyzeFlag: take the flag and return the action number                *
+ **************************************************************************/
+int analyzeFlag(char *str)  {
+  /* get split char */
+  char* splitPoint = strchr(str,':');
+  if (!splitPoint)
+    return 0;
+  /* get flag */
+  char * flag = malloc((splitPoint - str)/sizeof(char));
+  strncpy(flag, str, (splitPoint - str)/sizeof(char));
+  for(int i = 0; i < sizeof(actionFlag)/sizeof(char *); i++){
+    if(strcmp(actionFlag[i], flag)==0)
+      return i;
+  }
+}
+
+/**************************************************************************
+ * checkPW: Check the string is the correct password in the file          *
+ * return : 1 password true, 0 password false                             *
+ **************************************************************************/
+int checkPW(char *str)  {
+  FILE * fp;
+  char read_line[256] = {0};
+  char* splitPoint = strchr(str,':');
+  
+  fp = fopen ("pw_file.txt", "r");
+  while (!feof(fp) && !ferror(fp)) {
+    fgets(read_line, sizeof(read_line), fp);
+    read_line[strlen(read_line)-1]='\0';
+    if (strcmp(read_line,splitPoint+1) == 0)
+    {
+      fclose(fp);
+      return 1;
+    } 
+  }
+  fclose(fp);
+  return 0;
 }
 
 /**************************************************************************
@@ -193,10 +247,7 @@ int main(int argc, char *argv[]) {
   socklen_t remotelen;
   int cliserv = -1;    /* must be specified on cmd line */
   unsigned long int tap2net = 0, net2tap = 0;
-  char pw_str[256] = "";
-  FILE * fp;
-  char read_line[256] ="";
-  bool get_correct_pw = false;
+  char pw_str[256] = "pwi:";
 
   progname = argv[0];
   
@@ -229,7 +280,7 @@ int main(int argc, char *argv[]) {
         flags = IFF_TAP;
         break;
       case 'w':
-        strncpy(pw_str,optarg,255);
+        strncat(pw_str,optarg,pwLenth);
         break;
       default:
         my_err("Unknown option %c\n", option);
@@ -287,58 +338,13 @@ int main(int argc, char *argv[]) {
     net_fd = sock_fd;
     do_debug("CLIENT: Connected to server %s\n", inet_ntoa(remote.sin_addr));
     
-    if (strlen(pw_str)!=0) {
-        do_debug("pw_str: %s\n", pw_str);
-        do_debug("len_pw_str: %d\n", strlen(pw_str));
-        write(net_fd, pw_str, strlen(pw_str));
-        pw_str[0] = '\0';
+    if (strlen(pw_str)!=4) {
+      /* send pass word to server*/
+      sleep(1);
+      //cwrite(tap_fd, pw_str, strlen(pw_str));
+      send2tun(net_fd, pw_str);
     }
     
-    /* use select() to handle two descriptors at once */
-    maxfd = (tap_fd > net_fd)?tap_fd:net_fd;
-    
-    while(1){
-        int ret;
-        fd_set rd_set;
-        FD_ZERO(&rd_set);
-        FD_SET(tap_fd, &rd_set); FD_SET(net_fd, &rd_set);
-
-        ret = select(maxfd + 1, &rd_set, NULL, NULL, NULL);
-        do_debug("select ret: %d",ret);
-        if (ret < 0 && errno == EINTR){
-          return(0);
-        }
-        if (ret < 0) {
-          perror("select()");
-          exit(1);
-        }
-        
-        if(FD_ISSET(net_fd, &rd_set)) {
-            
-            net2tap++;
-    
-            // read packet
-            memset(buffer, 0, BUFSIZE);
-            nread = read(net_fd, buffer, BUFSIZE);
-            
-            if (nread != 0)
-            {
-                do_debug("buffer:%s\n", buffer);
-                for(int i=0; i<= strlen(buffer); i++)
-                    do_debug("\\@%c", buffer[i]);
-                do_debug("len_buffer:%d\n", strlen(buffer));
-                if(strcmp(buffer,"1")==0)
-                    printf("connected, tunnel established.\n");
-                else 
-                    if(strcmp(buffer,"0")==0)
-                        printf("connect failed, wrong password.\n");
-                    else 
-                        printf("unknown feedback :%s\n",buffer);
-                break;
-            }
-        }
-    }
-
   } else {
     /* Server, wait for connections */
 
@@ -362,68 +368,91 @@ int main(int argc, char *argv[]) {
       exit(1);
     }
     
-    while(1){
-        /* wait for connection request */
-        remotelen = sizeof(remote);
-        memset(&remote, 0, remotelen);
-        if ((net_fd = accept(sock_fd, (struct sockaddr*)&remote, &remotelen)) < 0) {
-          perror("accept()");
+    /* wait for connection request */
+    remotelen = sizeof(remote);
+    memset(&remote, 0, remotelen);
+    if ((net_fd = accept(sock_fd, (struct sockaddr*)&remote, &remotelen)) < 0) {
+      perror("accept()");
+      exit(1);
+    }
+
+    do_debug("SERVER: Client connected from %s\n", inet_ntoa(remote.sin_addr));
+  }
+  
+  /* use select() to handle two descriptors at once */
+  maxfd = (tap_fd > net_fd)?tap_fd:net_fd;
+
+  while(1) {
+    int ret;
+    fd_set rd_set;
+
+    FD_ZERO(&rd_set);
+    FD_SET(tap_fd, &rd_set); FD_SET(net_fd, &rd_set);
+
+    ret = select(maxfd + 1, &rd_set, NULL, NULL, NULL);
+
+    if (ret < 0 && errno == EINTR){
+      printf("continue\n");
+      continue;
+    }
+
+    if (ret < 0) {
+      perror("select()");
+      exit(1);
+    }
+
+    if(FD_ISSET(tap_fd, &rd_set)) {
+      /* data from tun/tap: just read it and write it to the network */
+      memset(buffer, 0, BUFSIZE);
+      nread = cread(tap_fd, buffer, BUFSIZE);
+      tap2net++;
+      do_debug("TAP2NET %lu: Read %d bytes from the tap interface\n", tap2net, nread);
+      /* write length + packet */
+      plength = htons(nread);
+      nwrite = cwrite(net_fd, (char *)&plength, sizeof(plength));
+      nwrite = cwrite(net_fd, buffer, nread);
+      do_debug("TAP2NET %lu: Written %d bytes to the network\n", tap2net, nwrite);
+    }
+
+    if(FD_ISSET(net_fd, &rd_set)) {
+      /* data from the network: read it, and write it to the tun/tap interface. 
+       * We need to read the length first, and then the packet */
+      memset(buffer, 0, BUFSIZE);
+      /* Read length */      
+      nread = read_n(net_fd, (char *)&plength, sizeof(plength));
+      if(nread == 0) {
+        /* ctrl-c at the other end */
+        break;
+      }
+      net2tap++;
+      /* read packet */
+      nread = read_n(net_fd, buffer, ntohs(plength));
+      do_debug("NET2TAP %lu: Read %d bytes from the network\n", net2tap, nread);
+      /* analyze string to take flag */
+      switch(analyzeFlag(buffer)){
+      case PW_Input:
+        if(checkPW(buffer))
+          send2tun(net_fd, "pwr:1");
+        else
+          send2tun(net_fd, "pwr:0");
+        break;
+      case PW_Result:
+        if(buffer[4]=='1')
+          printf("connected, tunnel established.\n");
+        else{
+          printf("connect failed, wrong password.\n");
           exit(1);
         }
-
-        do_debug("SERVER: Client connected from %s\n", inet_ntoa(remote.sin_addr));
-        
-        /* use select() to handle two descriptors at once */
-        maxfd = (tap_fd > net_fd)?tap_fd:net_fd;
-        
-        
-        int ret;
-        fd_set rd_set;
-        FD_ZERO(&rd_set);
-        FD_SET(tap_fd, &rd_set); FD_SET(net_fd, &rd_set);
-
-        ret = select(maxfd + 1, &rd_set, NULL, NULL, NULL);
-        if (ret < 0 && errno == EINTR){
-          continue;
-        }
-
-        if (ret < 0) {
-          perror("select()");
-          exit(1);
-        }
-        if(FD_ISSET(net_fd, &rd_set)) {
-            
-            net2tap++;
-
-            // read packet
-            nread = read(net_fd, buffer, BUFSIZE);
-            if (nread != 0)
-            {
-                fp = fopen ("pw_file.txt", "r");
-                while (!feof(fp) && !ferror(fp)) {
-                    fgets(read_line, sizeof(read_line), fp);
-                    read_line[strlen(read_line)-1]='\0';
-                    do_debug("read_line:%s\n", read_line);
-                    do_debug("len_read_line:%d\n", strlen(read_line));
-                    do_debug("buffer:%s\n", buffer);
-                    for(int i=0; i<= strlen(buffer); i++)
-                        do_debug("\\@%c", buffer[i]);
-                    do_debug("len_buffer:%d\n", strlen(buffer));
-                    do_debug("strcmp:%d\n", strcmp(read_line,buffer));
-                    if (strcmp(read_line,buffer) == 0)
-                    {
-                        get_correct_pw=true;
-                        do_debug("write 1 in net_fd\n");
-                        break;
-                    }
-                }
-                fclose(fp);
-                (get_correct_pw)?write(net_fd, "1", strlen("1")):write(net_fd, "0", strlen("0"));
-                get_correct_pw=false;
-            }
-            memset(buffer, 0, BUFSIZE);
-        }
+        break;
+      case OTHERS:
+      default :
+        /* now buffer[] contains a full packet or frame, write it into the tun/tap interface */ 
+        nwrite = cwrite(tap_fd, buffer, nread);
+        do_debug("NET2TAP %lu: Written %d bytes to the tap interface\n", net2tap, nwrite);
+        break;
+      }
     }
   }
+  
   return(0);
 }
